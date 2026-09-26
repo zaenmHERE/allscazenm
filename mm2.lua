@@ -1,9 +1,10 @@
 --[[
-    Zen Hub — Murder Mystery 2 (FINAL v4)
-    Sidebar nav, wider hub, custom minimize logo
-    Fitur: ESP, Friend, Teleport, Auto Coin, Movement, Auto Shoot,
+    Zen Hub — Murder Mystery 2 (FINAL v6)
+    Fitur: ESP + Tracers + Distance, Friend, Teleport (TP/Freeze/Fling),
+           Auto Coin (fix) + Counter, Movement, Auto Shoot, Silent Aim,
            Hidden ke atap, Keybind, Notification, Config Save/Load,
-           Auto Win, Anti-AFK, FPS Boost, Server Hop, Player Info
+           Auto Win, Auto Kill, Anti-Hit, Gun Aura, Anti-Fling, Anti-Void,
+           Anti-AFK, FPS Boost, Server Hop, Auto Rejoin, Music, Player Info
 ]]
 
 local Players = game:GetService("Players")
@@ -14,6 +15,8 @@ local UserInputService = game:GetService("UserInputService")
 local HttpService = game:GetService("HttpService")
 local VirtualUser = game:GetService("VirtualUser")
 local TeleportService = game:GetService("TeleportService")
+local SoundService = game:GetService("SoundService")
+local LogService = game:GetService("LogService")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
@@ -34,11 +37,21 @@ local Config = {
     AutoCoin = false,
     AutoShoot = false,
     AutoWin = false,
+    AutoKill = false,
+    AntiHit = false,
+    GunAura = false,
+    SilentAim = false,
+    Tracers = false,
+    DistanceESP = false,
+    AntiFling = false,
+    AntiVoid = false,
+    AutoRejoin = false,
     AntiAFK = true,
     Movement = { Enabled = false, WalkSpeed = 32, JumpPower = 80 },
     Hidden = false,
     HiddenOffsetY = 200,
     MinimizeLogo = "Z",
+    CoinCount = 0,
 }
 
 local Theme = {
@@ -99,7 +112,7 @@ corner(ZButton, 14)
 stroke(ZButton, Theme.Accent, 1.5, 0.3)
 
 local Main = Instance.new("Frame")
-Main.Size = UDim2.new(0, 420, 0, 360)
+Main.Size = UDim2.new(0, 420, 0, 400)
 Main.Position = UDim2.new(0, 20, 0, 100)
 Main.BackgroundColor3 = Theme.BgDark
 Main.BackgroundTransparency = 0.15
@@ -435,35 +448,63 @@ local function notify(text)
 end
 
 ------------------------------------------------------------
--- ROLE
+-- ROLE DETECTION (4-LAYER)
 ------------------------------------------------------------
 local function getRole(plr)
     local char = plr.Character
     if not char then return "Innocent" end
+
     for _, tag in ipairs(char:GetChildren()) do
-        if tag:IsA("ObjectValue") or tag:IsA("StringValue") then
+        if tag:IsA("ObjectValue") or tag:IsA("StringValue") or tag:IsA("BoolValue") then
             local n = tag.Name:lower()
-            if n:find("murder") then return "Murder" end
-            if n:find("sheriff") then return "Sheriff" end
-            if n:find("hero") then return "Hero" end
+            local v = tostring(tag.Value or ""):lower()
+            if n:find("murder") or v:find("murder") then return "Murder" end
+            if n:find("sheriff") or v:find("sheriff") then return "Sheriff" end
+            if n:find("hero") or v:find("hero") then return "Hero" end
         end
     end
-    local bp = plr:FindFirstChild("Backpack")
-    if bp then
-        if bp:FindFirstChild("Knife") then return "Murder" end
-        if bp:FindFirstChild("Gun") or bp:FindFirstChild("Revolver") then return "Sheriff" end
+
+    for _, src in ipairs({char, plr}) do
+        for _, attr in ipairs(src:GetAttributes()) do
+            local a = attr:lower()
+            if a:find("murder") then return "Murder" end
+            if a:find("sheriff") then return "Sheriff" end
+            if a:find("hero") then return "Hero" end
+        end
     end
+
+    for _, container in ipairs({plr:FindFirstChild("Backpack"), char}) do
+        if container then
+            for _, tool in ipairs(container:GetChildren()) do
+                if tool:IsA("Tool") then
+                    local n = tool.Name:lower()
+                    if n:find("knife") or n:find("sword") or n:find("dagger") or n:find("murder") then
+                        return "Murder"
+                    end
+                    if n:find("gun") or n:find("revolver") or n:find("sheriff") or n:find("pistol") then
+                        return "Sheriff"
+                    end
+                end
+            end
+        end
+    end
+
     return "Innocent"
 end
 
 ------------------------------------------------------------
--- ESP
+-- ESP + TRACERS
 ------------------------------------------------------------
 local espFolder = Instance.new("Folder")
 espFolder.Name = "ZenHub_ESP"
 espFolder.Parent = Workspace
 
+local tracerFolder = Instance.new("Folder")
+tracerFolder.Name = "ZenHub_Tracers"
+tracerFolder.Parent = Workspace
+
 local espCache = {}
+local tracerCache = {}
 
 local function createESP(plr)
     local box = Instance.new("Highlight")
@@ -473,7 +514,7 @@ local function createESP(plr)
     box.Parent = espFolder
 
     local label = Instance.new("BillboardGui")
-    label.Size = UDim2.new(0, 130, 0, 22)
+    label.Size = UDim2.new(0, 160, 0, 22)
     label.StudsOffset = Vector3.new(0, 3, 0)
     label.AlwaysOnTop = true
     label.Parent = espFolder
@@ -490,6 +531,9 @@ local function createESP(plr)
 end
 
 local function updateESP()
+    local localChar = LocalPlayer.Character
+    local localHRP = localChar and localChar:FindFirstChild("HumanoidRootPart")
+
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr == LocalPlayer then continue end
         local char = plr.Character
@@ -513,10 +557,46 @@ local function updateESP()
         data.box.FillTransparency = isFriend and 0.8 or 0.6
         data.box.Enabled = Config.ESP
 
+        local distText = ""
+        if Config.DistanceESP and localHRP then
+            local d = math.floor((hrp.Position - localHRP.Position).Magnitude)
+            distText = " (" .. d .. "m)"
+        end
+
         data.label.Adornee = hrp
         data.label.Enabled = Config.ESP
-        data.text.Text = string.format("%s [%s]%s", plr.Name, role, isFriend and " ★" or "")
+        data.text.Text = string.format("%s [%s]%s%s", plr.Name, role, isFriend and " ★" or "", distText)
         data.text.TextColor3 = color
+
+        if Config.Tracers then
+            if not tracerCache[plr] then
+                local line = Instance.new("LineHandleAdornment")
+                line.Adornee = Camera
+                line.Thickness = 2
+                line.AlwaysOnTop = true
+                line.Transparency = 0.3
+                line.Parent = tracerFolder
+                tracerCache[plr] = line
+            end
+            local tr = tracerCache[plr]
+            local screenPos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+            if onScreen then
+                local startPos = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+                local endPos = Vector2.new(screenPos.X, screenPos.Y)
+                local delta = endPos - startPos
+                local center = (startPos + endPos) / 2
+                local angle = math.atan2(delta.Y, delta.X)
+                tr.Adornee = Camera
+                tr.CFrame = CFrame.new(Vector3.new(center.X, center.Y, 0)) * CFrame.Angles(0, 0, angle - math.pi / 2)
+                tr.Length = delta.Magnitude
+                tr.Color3 = color
+                tr.Visible = true
+            else
+                tr.Visible = false
+            end
+        else
+            if tracerCache[plr] then tracerCache[plr].Visible = false end
+        end
     end
 
     for plr, data in pairs(espCache) do
@@ -524,6 +604,10 @@ local function updateESP()
             data.box:Destroy()
             data.label:Destroy()
             espCache[plr] = nil
+            if tracerCache[plr] then
+                tracerCache[plr]:Destroy()
+                tracerCache[plr] = nil
+            end
         end
     end
 end
@@ -553,10 +637,7 @@ local function findRoofPosition()
         end
     end
 
-    if bestY > origin.Y + 5 then
-        return bestPos
-    end
-
+    if bestY > origin.Y + 5 then return bestPos end
     return origin + Vector3.new(0, Config.HiddenOffsetY, 0)
 end
 
@@ -587,11 +668,11 @@ local function setHidden(state)
 end
 
 ------------------------------------------------------------
--- TELEPORT DROPDOWN
+-- TELEPORT + FREEZE + FLING
 ------------------------------------------------------------
 local tpFrame = Instance.new("ScrollingFrame")
-tpFrame.Size = UDim2.new(0, 200, 0, 140)
-tpFrame.Position = UDim2.new(0, 20, 0, 480)
+tpFrame.Size = UDim2.new(0, 220, 0, 180)
+tpFrame.Position = UDim2.new(0, 20, 0, 520)
 tpFrame.BackgroundColor3 = Theme.BgDark
 tpFrame.BackgroundTransparency = 0.1
 tpFrame.BorderSizePixel = 0
@@ -610,7 +691,7 @@ tpHeader.Size = UDim2.new(1, 0, 0, 24)
 tpHeader.BackgroundColor3 = Theme.BgMid
 tpHeader.BackgroundTransparency = 0.2
 tpHeader.BorderSizePixel = 0
-tpHeader.Text = "Teleport"
+tpHeader.Text = "Player Actions"
 tpHeader.TextColor3 = Theme.Accent
 tpHeader.Font = Enum.Font.GothamBold
 tpHeader.TextSize = 12
@@ -631,80 +712,143 @@ tpLayout.Parent = tpList
 
 local function teleportTo(plr)
     local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstCarChild("HumanoidRootPart")
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
     local target = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
     if hrp and target then
         hrp.CFrame = target.CFrame * CFrame.new(0, 0, 3)
     end
 end
 
+local function freezePlayer(plr)
+    local hrp = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then notify("Player nggak ada") return end
+    hrp.Anchored = true
+    notify(plr.Name .. " di-freeze")
+    task.delay(5, function()
+        if hrp and hrp.Parent then hrp.Anchored = false end
+    end)
+end
+
+local function flingPlayer(plr)
+    local char = plr.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then notify("Player nggak ada") return end
+    local vel = Instance.new("BodyVelocity")
+    vel.Velocity = Vector3.new(0, 500, 0)
+    vel.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+    vel.Parent = hrp
+    task.delay(0.3, function()
+        if vel and vel.Parent then vel:Destroy() end
+    end)
+    notify(plr.Name .. " di-fling")
+end
+
 local function refreshTPList()
     for _, c in ipairs(tpList:GetChildren()) do
-        if c:IsA("TextButton") then c:Destroy() end
+        if c:IsA("Frame") then c:Destroy() end
     end
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr == LocalPlayer then continue end
-        local b = Instance.new("TextButton")
-        b.Size = UDim2.new(1, -8, 0, 22)
-        b.BackgroundColor3 = Theme.BgLight
-        b.BackgroundTransparency = 0.4
-        b.BorderSizePixel = 0
-        b.Text = "  " .. plr.Name
-        b.TextColor3 = Theme.Text
-        b.Font = Enum.Font.Gotham
-        b.TextSize = 11
-        b.TextXAlignment = Enum.TextXAlignment.Left
-        b.ZIndex = 52
-        b.Parent = tpList
-        corner(b, 5)
-        b.MouseButton1Click:Connect(function() teleportTo(plr) end)
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, -8, 0, 26)
+        row.BackgroundTransparency = 1
+        row.ZIndex = 52
+        row.Parent = tpList
+
+        local rowLayout = Instance.new("UIListLayout")
+        rowLayout.FillDirection = Enum.FillDirection.Horizontal
+        rowLayout.Padding = UDim.new(0, 3)
+        rowLayout.Parent = row
+
+        local name = Instance.new("TextLabel")
+        name.Size = UDim2.new(0, 100, 1, 0)
+        name.BackgroundTransparency = 1
+        name.Text = plr.Name
+        name.TextColor3 = Theme.Text
+        name.Font = Enum.Font.Gotham
+        name.TextSize = 10
+        name.TextXAlignment = Enum.TextXAlignment.Left
+        name.TextTruncate = Enum.TextTruncate.AtEnd
+        name.ZIndex = 53
+        name.Parent = row
+
+        local function makeActionBtn(text, width, color, cb)
+            local b = Instance.new("TextButton")
+            b.Size = UDim2.new(0, width, 1, 0)
+            b.BackgroundColor3 = color
+            b.BackgroundTransparency = 0.3
+            b.BorderSizePixel = 0
+            b.Text = text
+            b.TextColor3 = Theme.Text
+            b.Font = Enum.Font.GothamBold
+            b.TextSize = 10
+            b.ZIndex = 53
+            b.Parent = row
+            corner(b, 4)
+            b.MouseButton1Click:Connect(cb)
+            return b
+        end
+
+        makeActionBtn("TP", 30, Theme.AccentDim, function() teleportTo(plr) end)
+        makeActionBtn("Fr", 30, Theme.BgLight, function() freezePlayer(plr) end)
+        makeActionBtn("Fl", 30, Theme.Red, function() flingPlayer(plr) end)
     end
 end
 
 ------------------------------------------------------------
--- AUTO COIN
+-- AUTO COIN (FIX) + COUNTER
 ------------------------------------------------------------
+local coinCache = {}
+local lastCoinScan = 0
+
 local function isCoin(obj)
     if not obj or not obj:IsA("BasePart") then return false end
     local n = obj.Name:lower()
-    return n == "coin" or n:find("coin")
+    if n:find("coin") then return true end
+    if obj:FindFirstChildOfClass("TouchTransmitter") and obj.Size.Magnitude < 10 then return true end
+    return false
 end
-
-local function getAllCoins()
-    local list = {}
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        if isCoin(obj) then table.insert(list, obj) end
-    end
-    return list
-end
-
-local collectMode = firetouchinterest and 1 or 3
 
 RunService.Heartbeat:Connect(function()
     if not Config.AutoCoin then return end
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not hrp then return end
 
-    local coins = getAllCoins()
-    if #coins == 0 then return end
-    table.sort(coins, function(a, b)
-        return (a.Position - hrp.Position).Magnitude < (b.Position - hrp.Position).Magnitude
-    end)
-    local coin = coins[1]
-    if not coin then return end
+    if tick() - lastCoinScan > 0.15 then
+        lastCoinScan = tick()
+        coinCache = {}
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            if isCoin(obj) then table.insert(coinCache, obj) end
+        end
+    end
 
-    if collectMode == 1 and firetouchinterest then
+    local bestCoin, bestDist = nil, math.huge
+    for _, coin in ipairs(coinCache) do
+        if coin.Parent then
+            local d = (coin.Position - hrp.Position).Magnitude
+            if d < bestDist then
+                bestDist = d
+                bestCoin = coin
+            end
+        end
+    end
+    if not bestCoin then return end
+
+    if firetouchinterest then
         pcall(function()
-            firetouchinterest(hrp, coin, 0)
-            task.wait()
-            firetouchinterest(hrp, coin, 1)
+            firetouchinterest(hrp, bestCoin, 0)
+            task.wait(0.02)
+            firetouchinterest(hrp, bestCoin, 1)
+            Config.CoinCount = Config.CoinCount + 1
         end)
-    elseif collectMode == 2 then
-        hrp.CFrame = coin.CFrame
+    elseif fireproximityprompt and bestCoin:FindFirstChildOfClass("ProximityPrompt") then
+        pcall(function()
+            fireproximityprompt(bestCoin:FindFirstChildOfClass("ProximityPrompt"))
+            Config.CoinCount = Config.CoinCount + 1
+        end)
     else
-        if hum then hum:MoveTo(coin.Position) end
+        hrp.CFrame = bestCoin.CFrame + Vector3.new(0, 2, 0)
     end
 end)
 
@@ -726,7 +870,7 @@ LocalPlayer.CharacterAdded:Connect(function()
 end)
 
 ------------------------------------------------------------
--- AUTO SHOOT
+-- AUTO SHOOT + SILENT AIM + GUN AURA
 ------------------------------------------------------------
 local function getMurder()
     for _, plr in ipairs(Players:GetPlayers()) do
@@ -737,33 +881,6 @@ local function getMurder()
     return nil
 end
 
-local function getEquippedGun()
-    local char = LocalPlayer.Character
-    if not char then return nil end
-    for _, tool in ipairs(char:GetChildren()) do
-        if tool:IsA("Tool") and (tool.Name:lower():find("gun") or tool.Name:lower():find("revolver")) then
-            return tool
-        end
-    end
-    return nil
-end
-
-RunService.Heartbeat:Connect(function()
-    if not Config.AutoShoot then return end
-    if getRole(LocalPlayer) ~= "Sheriff" then return end
-    local murder = getMurder()
-    if not murder or not murder.Character then return end
-    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    local targetHRP = murder.Character:FindFirstChild("HumanoidRootPart")
-    if not hrp or not targetHRP then return end
-    Camera.CFrame = CFrame.new(Camera.CFrame.Position, targetHRP.Position)
-    local gun = getEquippedGun()
-    if gun then pcall(function() gun:Activate() end) end
-end)
-
-------------------------------------------------------------
--- AUTO WIN
-------------------------------------------------------------
 local function getInnocent()
     local best, bestDist = nil, math.huge
     local char = LocalPlayer.Character
@@ -784,6 +901,84 @@ local function getInnocent()
     return best
 end
 
+local function getEquippedGun()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    for _, tool in ipairs(char:GetChildren()) do
+        if tool:IsA("Tool") and (tool.Name:lower():find("gun") or tool.Name:lower():find("revolver") or tool.Name:lower():find("pistol")) then
+            return tool
+        end
+    end
+    return nil
+end
+
+RunService.Heartbeat:Connect(function()
+    if not Config.AutoShoot then return end
+    if getRole(LocalPlayer) ~= "Sheriff" then return end
+    local murder = getMurder()
+    if not murder or not murder.Character then return end
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    local targetHRP = murder.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp or not targetHRP then return end
+    Camera.CFrame = CFrame.new(Camera.CFrame.Position, targetHRP.Position)
+    local gun = getEquippedGun()
+    if gun then pcall(function() gun:Activate() end) end
+end)
+
+RunService.Heartbeat:Connect(function()
+    if not Config.GunAura then return end
+    if getRole(LocalPlayer) ~= "Sheriff" then return end
+    local gun = getEquippedGun()
+    if not gun then return end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and getRole(plr) == "Murder" and not Config.Friends[plr.UserId] then
+            local t = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+            if t and (t.Position - hrp.Position).Magnitude < 50 then
+                Camera.CFrame = CFrame.new(Camera.CFrame.Position, t.Position)
+                pcall(function() gun:Activate() end)
+            end
+        end
+    end
+end)
+
+RunService.Heartbeat:Connect(function()
+    if not Config.SilentAim then return end
+    if getRole(LocalPlayer) ~= "Sheriff" then return end
+    local gun = getEquippedGun()
+    if not gun then return end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    local bestTarget, bestDist = nil, math.huge
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and getRole(plr) == "Murder" and not Config.Friends[plr.UserId] then
+            local t = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+            if t then
+                local d = (t.Position - hrp.Position).Magnitude
+                if d < bestDist and d < 200 then
+                    bestDist = d
+                    bestTarget = plr
+                end
+            end
+        end
+    end
+    if not bestTarget then return end
+    local targetHRP = bestTarget.Character:FindFirstChild("HumanoidRootPart")
+    if targetHRP then
+        local oldCFrame = Camera.CFrame
+        Camera.CFrame = CFrame.new(oldCFrame.Position, targetHRP.Position)
+        pcall(function() gun:Activate() end)
+        task.wait()
+        Camera.CFrame = oldCFrame
+    end
+end)
+
+------------------------------------------------------------
+-- AUTO WIN + AUTO KILL
+------------------------------------------------------------
 RunService.Heartbeat:Connect(function()
     if not Config.AutoWin then return end
     if getRole(LocalPlayer) ~= "Murder" then return end
@@ -796,8 +991,77 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
+RunService.Heartbeat:Connect(function()
+    if not Config.AutoKill then return end
+    if getRole(LocalPlayer) ~= "Murder" then return end
+    local target = getInnocent()
+    if not target or not target.Character then return end
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    local tHRP = target.Character:FindFirstChild("HumanoidRootPart")
+    if hrp and tHRP then
+        hrp.CFrame = tHRP.CFrame * CFrame.new(0, 0, 2)
+        for _, tool in ipairs(LocalPlayer.Character:GetChildren()) do
+            if tool:IsA("Tool") then
+                pcall(function() tool:Activate() end)
+            end
+        end
+    end
+end)
+
 ------------------------------------------------------------
--- ANTI-AFK
+-- ANTI-HIT + ANTI-FLING + ANTI-VOID
+------------------------------------------------------------
+RunService.Heartbeat:Connect(function()
+    if not Config.AntiHit then return end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr == LocalPlayer then continue end
+        if getRole(plr) == "Murder" and not Config.Friends[plr.UserId] then
+            local t = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+            if t then
+                local dist = (t.Position - hrp.Position).Magnitude
+                if dist < 12 then
+                    local dir = (hrp.Position - t.Position).Unit
+                    hrp.CFrame = hrp.CFrame + dir * 3
+                end
+            end
+        end
+    end
+end)
+
+local lastFlingPos = Vector3.new()
+
+RunService.Heartbeat:Connect(function()
+    if not Config.AntiFling then return end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    local vel = hrp.AssemblyLinearVelocity
+    if vel.Magnitude > 500 then
+        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        if lastFlingPos.Magnitude > 0 then
+            hrp.CFrame = CFrame.new(lastFlingPos)
+        end
+    else
+        lastFlingPos = hrp.Position
+    end
+end)
+
+RunService.Heartbeat:Connect(function()
+    if not Config.AntiVoid then return end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    if hrp.Position.Y < -50 then
+        hrp.CFrame = CFrame.new(0, 50, 0)
+        notify("Anti-Void aktif")
+    end
+end)
+
+------------------------------------------------------------
+-- ANTI-AFK + FPS BOOST
 ------------------------------------------------------------
 LocalPlayer.Idled:Connect(function()
     if not Config.AntiAFK then return end
@@ -805,9 +1069,6 @@ LocalPlayer.Idled:Connect(function()
     VirtualUser:ClickButton2(Vector2.new())
 end)
 
-------------------------------------------------------------
--- FPS BOOST
-------------------------------------------------------------
 local function applyFPSBoost(state)
     if state then
         for _, obj in ipairs(game:GetDescendants()) do
@@ -826,7 +1087,7 @@ local function applyFPSBoost(state)
 end
 
 ------------------------------------------------------------
--- SERVER HOP
+-- SERVER HOP + AUTO REJOIN
 ------------------------------------------------------------
 local function serverHop()
     local placeId = game.PlaceId
@@ -847,11 +1108,24 @@ local function serverHop()
     end
 end
 
+local rejoinJobId = game.JobId
+local rejoinPlaceId = game.PlaceId
+
+LogService.MessageOut:Connect(function(msg, type)
+    if not Config.AutoRejoin then return end
+    if type == Enum.MessageType.MessageError then
+        if msg:lower():find("kick") or msg:lower():find("disconnect") then
+            task.wait(2)
+            pcall(function()
+                TeleportService:TeleportToPlaceInstance(rejoinPlaceId, rejoinJobId, LocalPlayer)
+            end)
+        end
+    end
+end)
+
 ------------------------------------------------------------
 -- MUSIC
 ------------------------------------------------------------
-local SoundService = game:GetService("SoundService")
-
 local Music = {
     sound = nil,
     volume = 0.5,
@@ -874,10 +1148,7 @@ local function ensureSound()
 end
 
 local function playSound(id)
-    if not id or id == "" then
-        notify("Sound ID kosong")
-        return
-    end
+    if not id or id == "" then notify("Sound ID kosong") return end
     local s = ensureSound()
     Music.currentId = tostring(id)
     s.SoundId = "rbxassetid://" .. Music.currentId
@@ -888,55 +1159,33 @@ local function playSound(id)
         Music.playing = true
         notify("Muter: " .. Music.currentId)
     else
-        notify("Gagal muter: " .. tostring(err))
+        notify("Gagal: " .. tostring(err))
     end
 end
 
 local function stopSound()
-    if Music.sound then
-        Music.sound:Stop()
-        Music.playing = false
-        notify("Musik distop")
-    end
+    if Music.sound then Music.sound:Stop() Music.playing = false notify("Musik stop") end
 end
 
 local function pauseSound()
-    if Music.sound then
-        Music.sound:Pause()
-        Music.playing = false
-        notify("Musik dipause")
-    end
+    if Music.sound then Music.sound:Pause() Music.playing = false notify("Musik pause") end
 end
 
 local function resumeSound()
-    if Music.sound and Music.currentId ~= "" then
-        Music.sound:Resume()
-        Music.playing = true
-        notify("Musik dilanjut")
-    end
+    if Music.sound and Music.currentId ~= "" then Music.sound:Resume() Music.playing = true notify("Musik lanjut") end
 end
 
 local function nextTrack()
-    if #Music.playlist == 0 then
-        notify("Playlist kosong")
-        return
-    end
+    if #Music.playlist == 0 then notify("Playlist kosong") return end
     Music.currentIndex = Music.currentIndex + 1
-    if Music.currentIndex > #Music.playlist then
-        Music.currentIndex = 1
-    end
+    if Music.currentIndex > #Music.playlist then Music.currentIndex = 1 end
     playSound(Music.playlist[Music.currentIndex])
 end
 
 local function prevTrack()
-    if #Music.playlist == 0 then
-        notify("Playlist kosong")
-        return
-    end
+    if #Music.playlist == 0 then notify("Playlist kosong") return end
     Music.currentIndex = Music.currentIndex - 1
-    if Music.currentIndex < 1 then
-        Music.currentIndex = #Music.playlist
-    end
+    if Music.currentIndex < 1 then Music.currentIndex = #Music.playlist end
     playSound(Music.playlist[Music.currentIndex])
 end
 
@@ -1003,11 +1252,11 @@ UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
     if input.KeyCode == Enum.KeyCode.F1 then
         Main.Visible = not Main.Visible
-        if not Main.Visible then
-            ZButton.Visible = true
-            ZButton.Position = Main.Position
+        ZButton.Visible = not Main.Visible
+        if Main.Visible then
+            Main.Position = ZButton.Position
         else
-            ZButton.Visible = false
+            ZButton.Position = Main.Position
         end
     elseif input.KeyCode == Enum.KeyCode.F2 then
         Config.ESP = not Config.ESP
@@ -1017,6 +1266,15 @@ UserInputService.InputBegan:Connect(function(input, gpe)
         notify("Hidden: " .. (Config.Hidden and "ON" or "OFF"))
     elseif input.KeyCode == Enum.KeyCode.F4 then
         if Music.playing then pauseSound() else resumeSound() end
+    elseif input.KeyCode == Enum.KeyCode.F5 then
+        Config.AntiHit = not Config.AntiHit
+        notify("Anti-Hit: " .. (Config.AntiHit and "ON" or "OFF"))
+    elseif input.KeyCode == Enum.KeyCode.F6 then
+        Config.SilentAim = not Config.SilentAim
+        notify("Silent Aim: " .. (Config.SilentAim and "ON" or "OFF"))
+    elseif input.KeyCode == Enum.KeyCode.F7 then
+        Config.Tracers = not Config.Tracers
+        notify("Tracers: " .. (Config.Tracers and "ON" or "OFF"))
     end
 end)
 
@@ -1025,13 +1283,15 @@ end)
 ------------------------------------------------------------
 local espPage = createTab("ESP")
 makeToggle(espPage, "Enable ESP", Config.ESP, function(v) Config.ESP = v end)
+makeToggle(espPage, "Tracers", Config.Tracers, function(v) Config.Tracers = v; notify("Tracers: " .. (v and "ON" or "OFF")) end)
+makeToggle(espPage, "Distance ESP", Config.DistanceESP, function(v) Config.DistanceESP = v; notify("Distance: " .. (v and "ON" or "OFF")) end)
 
 ------------------------------------------------------------
 -- TAB: FRIENDS
 ------------------------------------------------------------
 local friendPage = createTab("Friends")
 local friendList = Instance.new("Frame")
-friendList.Size = UDim2.new(1, -8, 0, 240)
+friendList.Size = UDim2.new(1, -8, 0, 260)
 friendList.BackgroundColor3 = Theme.BgMid
 friendList.BackgroundTransparency = 0.3
 friendList.BorderSizePixel = 0
@@ -1082,7 +1342,7 @@ end)
 ------------------------------------------------------------
 local infoPage = createTab("Info")
 local infoList = Instance.new("Frame")
-infoList.Size = UDim2.new(1, -8, 0, 260)
+infoList.Size = UDim2.new(1, -8, 0, 280)
 infoList.BackgroundColor3 = Theme.BgMid
 infoList.BackgroundTransparency = 0.3
 infoList.BorderSizePixel = 0
@@ -1097,6 +1357,16 @@ local function refreshInfoList()
     for _, c in ipairs(infoList:GetChildren()) do
         if c:IsA("TextLabel") then c:Destroy() end
     end
+    local coinLbl = Instance.new("TextLabel")
+    coinLbl.Size = UDim2.new(1, -8, 0, 22)
+    coinLbl.BackgroundTransparency = 1
+    coinLbl.Text = "  Coin collected: " .. Config.CoinCount
+    coinLbl.TextColor3 = Theme.Accent
+    coinLbl.Font = Enum.Font.GothamBold
+    coinLbl.TextSize = 11
+    coinLbl.TextXAlignment = Enum.TextXAlignment.Left
+    coinLbl.Parent = infoList
+
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     for _, plr in ipairs(Players:GetPlayers()) do
@@ -1105,7 +1375,7 @@ local function refreshInfoList()
         local dist = "?"
         if hrp and plr.Character then
             local t = plr.Character:FindFirstChild("HumanoidRootPart")
-            if t then dist = math.floor((t.Position - hrp.Position).Magnitude) .. " studs" end
+            if t then dist = math.floor((t.Position - hrp.Position).Magnitude) .. "m" end
         end
         local lbl = Instance.new("TextLabel")
         lbl.Size = UDim2.new(1, -8, 0, 22)
@@ -1133,14 +1403,21 @@ end)
 local miscPage = createTab("Misc")
 makeToggle(miscPage, "Auto Coin", Config.AutoCoin, function(v) Config.AutoCoin = v; notify("Auto Coin: " .. (v and "ON" or "OFF")) end)
 makeToggle(miscPage, "Auto Shoot", Config.AutoShoot, function(v) Config.AutoShoot = v; notify("Auto Shoot: " .. (v and "ON" or "OFF")) end)
+makeToggle(miscPage, "Silent Aim", Config.SilentAim, function(v) Config.SilentAim = v; notify("Silent Aim: " .. (v and "ON" or "OFF")) end)
+makeToggle(miscPage, "Gun Aura", Config.GunAura, function(v) Config.GunAura = v; notify("Gun Aura: " .. (v and "ON" or "OFF")) end)
 makeToggle(miscPage, "Auto Win (Murder)", Config.AutoWin, function(v) Config.AutoWin = v; notify("Auto Win: " .. (v and "ON" or "OFF")) end)
+makeToggle(miscPage, "Auto Kill (Murder)", Config.AutoKill, function(v) Config.AutoKill = v; notify("Auto Kill: " .. (v and "ON" or "OFF")) end)
+makeToggle(miscPage, "Anti-Hit", Config.AntiHit, function(v) Config.AntiHit = v; notify("Anti-Hit: " .. (v and "ON" or "OFF")) end)
+makeToggle(miscPage, "Anti-Fling", Config.AntiFling, function(v) Config.AntiFling = v; notify("Anti-Fling: " .. (v and "ON" or "OFF")) end)
+makeToggle(miscPage, "Anti-Void", Config.AntiVoid, function(v) Config.AntiVoid = v; notify("Anti-Void: " .. (v and "ON" or "OFF")) end)
+makeToggle(miscPage, "Anti-AFK", Config.AntiAFK, function(v) Config.AntiAFK = v end)
+makeToggle(miscPage, "Auto Rejoin", Config.AutoRejoin, function(v) Config.AutoRejoin = v; notify("Auto Rejoin: " .. (v and "ON" or "OFF")) end)
+makeToggle(miscPage, "FPS Boost", false, function(v) applyFPSBoost(v); notify("FPS Boost: " .. (v and "ON" or "OFF")) end)
 makeToggle(miscPage, "Movement Enabled", Config.Movement.Enabled, function(v)
     Config.Movement.Enabled = v
     applyMovement()
 end)
 makeToggle(miscPage, "Hidden (ke atap)", Config.Hidden, function(v) setHidden(v) end)
-makeToggle(miscPage, "Anti-AFK", Config.AntiAFK, function(v) Config.AntiAFK = v end)
-makeToggle(miscPage, "FPS Boost", false, function(v) applyFPSBoost(v); notify("FPS Boost: " .. (v and "ON" or "OFF")) end)
 
 makeSlider(miscPage, "WalkSpeed", 16, 200, Config.Movement.WalkSpeed, function(v)
     Config.Movement.WalkSpeed = v
@@ -1173,7 +1450,7 @@ end)
 ------------------------------------------------------------
 local musicPage = createTab("Music")
 
-makeTextBox(musicPage, "Sound ID (contoh: 1837879082)", "", function(text)
+makeTextBox(musicPage, "Sound ID", "", function(text)
     Music.currentId = text
 end)
 
@@ -1248,7 +1525,7 @@ makeToggle(musicPage, "Loop", Music.loop, function(v)
 end)
 
 local playlistFrame = Instance.new("Frame")
-playlistFrame.Size = UDim2.new(1, -8, 0, 160)
+playlistFrame.Size = UDim2.new(1, -8, 0, 140)
 playlistFrame.BackgroundColor3 = Theme.BgMid
 playlistFrame.BackgroundTransparency = 0.3
 playlistFrame.BorderSizePixel = 0
@@ -1342,7 +1619,7 @@ addBtn.MouseButton1Click:Connect(function()
         table.insert(Music.playlist, addBox.Text)
         addBox.Text = ""
         refreshPlaylist()
-        notify("Lagu ditambah ke playlist")
+        notify("Lagu ditambah")
     end
 end)
 
@@ -1409,6 +1686,10 @@ Players.PlayerRemoving:Connect(function(plr)
         espCache[plr].label:Destroy()
         espCache[plr] = nil
     end
+    if tracerCache[plr] then
+        tracerCache[plr]:Destroy()
+        tracerCache[plr] = nil
+    end
     refreshTPList()
     refreshFriendList()
 end)
@@ -1416,5 +1697,5 @@ end)
 refreshFriendList()
 refreshTPList()
 
-notify("Zen Hub loaded")
-print("[Zen Hub] v4 loaded.")
+notify("Zen Hub v6 loaded")
+print("[Zen Hub] v6 loaded.")
