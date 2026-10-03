@@ -1,4 +1,3 @@
-lua
 -- Steal a Lucky Block - Zone Selector dari folder "Zones"
 -- Gabungan versi simpel + baca data dari workspace.Zones
 
